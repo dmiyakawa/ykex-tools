@@ -1,0 +1,110 @@
+#!/bin/bash
+
+set -u
+
+host='localhost'
+verbose=0
+use_ykclient=0
+id=1
+apikey=''
+
+vlog() {
+  test $verbose -eq 1 && echo "$1" >&2
+}
+
+handle_dvorak() {
+  local otp=$1
+  if [[ $otp =~ ^[jxe.uidchtnbpygk]+$ ]]; then
+    vlog "\"$otp\" looks like Dvorak input. Converting"
+    otp=$(echo $otp | tr 'jxe.uidchtnbpygk' 'cbdefghijklnrtuv')
+  fi
+  echo "$otp"
+}
+
+request_decrypt() {
+  local otp=$(handle_dvorak $1)
+  url="http://${host}/wsapi/decrypt?otp=${otp}"
+  vlog "url: ${url}"
+  curl ${url}
+}
+
+ykclient_version() {
+  # ykclient possibly has two "versions".
+  # 1: newer one officially described
+  #  - Shows a version to stdout with --version
+  #  - e.g. yubico-c-client
+  # 2: older one that does not have several functionality
+  #  - Shows usage to stderr with --version
+  #    (meaning it does not support the option anyway)
+  #  - Debian wheezy / Ubuntu 14.04, CentOS 6
+  echo $(ykclient --version 2> /dev/null)
+}
+
+request_verify() {
+  local id=$1
+  local otp=$(handle_dvorak $2)
+  local version=$(ykclient_version)
+  if [[ -n $version ]]; then
+    url="http://${host}/wsapi/2.0/verify"
+    local opts='--debug '
+  else
+    url="http://${host}/wsapi/2.0/verify?id=%d&otp=%s"
+    local opts=' '
+  fi
+  if [[ -n ${apikey} ]]; then
+    opts="${opts} --apikey \"${apikey}\" "
+  fi
+  vlog "url: ${url}"
+  vlog "id: ${id}"
+  vlog "otp: ${otp}"
+  vlog "cmd: \"ykclient ${opts}--url $url $id $otp\""
+  ykclient ${opts} --url $url $id $otp
+}
+
+while getopts a:i:h:vc OPT
+do
+  case $OPT in
+    a)
+      apikey="${OPTARG}"
+      ;;
+    i)
+      id="${OPTARG}"
+      ;;
+    h)
+      host=$OPTARG
+      ;;
+    v)
+      verbose=1
+      ;;
+    c)
+      use_ykclient=1
+      ;;
+    \?)
+      exit
+      ;;
+  esac
+done
+shift $((OPTIND - 1))
+
+if [[ $# == 0 ]]; then
+  while true; do
+    read otp
+    if [[ -z "${otp}" ]]
+    then
+      break
+    fi
+    if [[ ${use_ykclient} = 1 ]]; then
+      request_verify ${id} ${otp}
+    else
+      request_decrypt ${otp}
+    fi
+  done
+else
+  for otp in $@; do
+    if [[ ${use_ykclient} = 1 ]]; then
+      request_verify ${id} ${otp}
+    else
+      request_decrypt ${otp}
+    fi
+  done
+fi
